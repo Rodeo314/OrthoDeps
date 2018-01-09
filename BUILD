@@ -1,1 +1,1 @@
-swiftc -o test AllClasses.swift main.swift
+swiftc -o test OrthoToolCLI.swift main.swift
