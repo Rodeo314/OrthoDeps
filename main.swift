@@ -1,2 +1,2 @@
-let application = OrthoDeps()
-application.resolveTileDependencies()
+let application = OrthoToolCLI()
+application.checkTileDependencies()
