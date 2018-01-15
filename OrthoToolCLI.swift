@@ -352,7 +352,9 @@ private class TemporaryFile {
     private var tmpFileURL: URL
 
     var url : URL {
-        return self.tmpFileURL
+        get {
+            return self.tmpFileURL
+        }
     }
 
     var fileHandleForReading : FileHandle? {
