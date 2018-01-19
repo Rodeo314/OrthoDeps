@@ -93,20 +93,20 @@ private class DSFTool {
     func dsf2text(for dsfURL: URL, to txtURL: URL) -> Bool {
         let dsfUrlExists = BasicFileChecker.checkStatus(atPath: dsfURL.path, wantFile: true, wantReadable: true)
         if (dsfUrlExists != .allOK) {
-            Utils.err("ERROR: invalid/missing DSF file at \(dsfURL.path)")
+            Utils.default.error("ERROR: invalid/missing DSF file at \(dsfURL.path)")
             return false
         }
         let dsfToolProcess = Process()
         if let execURL = self.execURL {
             let dsfToolValid = BasicFileChecker.checkStatus(atPath: execURL.path, wantFile: true, wantExecutable: true)
             if (dsfToolValid != .allOK) {
-                Utils.err("ERROR: invalid/missing DSFTool executable at \(execURL.path)")
+                Utils.default.error("ERROR: invalid/missing DSFTool executable at \(execURL.path)")
                 return false
             }
             dsfToolProcess.launchPath = execURL.path
             dsfToolProcess.arguments  = ["--dsf2text", "\(dsfURL.path)", "\(txtURL.path)"]
         } else { // TODO: support DSFTool in $PATH (launchPath: "/usr/bin/env", arguments: ["DSFTool", ...])
-            Utils.err("ERROR: missing DSFTool executable")
+            Utils.default.error("ERROR: missing DSFTool executable")
             return false
         }
         dsfToolProcess.standardOutput = Pipe()
@@ -115,10 +115,10 @@ private class DSFTool {
         dsfToolProcess.waitUntilExit()
         if (dsfToolProcess.terminationStatus != 0) {
             if let stdoutText = String(data: (dsfToolProcess.standardOutput as! Pipe).fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) {
-                Utils.err("\(stdoutText)", terminator: "")
+                Utils.default.error("\(stdoutText)", terminator: "")
             }
             if let stderrText = String(data: (dsfToolProcess.standardError  as! Pipe).fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) {
-                Utils.err("\(stderrText)", terminator: "")
+                Utils.default.error("\(stderrText)", terminator: "")
             }
         }
         return dsfToolProcess.terminationStatus == 0
@@ -128,26 +128,55 @@ private class DSFTool {
 private class DSFTile {
     private var packURL: URL
     private var fileURL: URL
-    private var resDone: Bool
+    private var haveLst: Bool
+    private var goodLst: Bool
+    private var haveChk: Bool
+    private var goodChk: Bool
     private var dsfName: String
     private var ddsList: [String]?
     private var pngList: [String]?
     private var terList: [String]?
 
+    private(set) var dependencyListGood : Bool {
+        get {
+            return self.haveLst == true && self.goodLst == true
+        }
+        set {
+            self.goodLst = newValue
+            self.haveLst = true
+        }
+    }
+
+    private(set) var dependencyCheckGood : Bool {
+        get {
+            return self.haveChk == true && self.goodChk == true
+        }
+        set {
+            self.goodChk = newValue
+            self.haveChk = true
+        }
+    }
+
+    private var quadrantComponent : String {
+        get {
+            return self.fileURL.deletingLastPathComponent().lastPathComponent
+        }
+    }
+
     init(_ inURL: URL) {
-        self.resDone = false
+        self.haveLst = false
+        self.goodLst = false
+        self.haveChk = false
+        self.goodChk = false
         self.ddsList = [String]()
         self.pngList = [String]()
         self.terList = [String]()
         self.dsfName = inURL.lastPathComponent
-        self.fileURL = inURL.resolvingSymlinksInPath()
+        self.fileURL = inURL.resolvingSymlinksInPath().absoluteURL
         self.packURL = self.fileURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() // DSF -> +XX-YYY -> Earth nav data -> X-Plane scenery pack
     }
 
     private func parseTextDSF(_ textURL: URL) -> Bool {
-        guard self.resDone == false else {
-            return true
-        }
         guard var terList = self.terList else {
             return false
         }
@@ -167,7 +196,7 @@ private class DSFTile {
         }
         splittr = nil
         if (terList.isEmpty) {
-            Utils.err("ERROR: no .ter file definitions found")
+            Utils.default.error("ERROR: no .ter file definitions found")
             return false
         }
         self.terList = terList
@@ -175,9 +204,6 @@ private class DSFTile {
     }
 
     @discardableResult private func parseTerFile(_ terURL: URL) -> Bool {
-        guard self.resDone == false else {
-            return true
-        }
         guard var ddsList = self.ddsList else {
             return false
         }
@@ -212,7 +238,7 @@ private class DSFTile {
         }
         splittr = nil
         if (missing == false && l1count >= ddsList.count && l2count >= pngList.count) {
-            Utils.err("ERROR: no definitions in \(terURL.lastPathComponent)")
+            Utils.default.error("ERROR: no definitions in \(terURL.lastPathComponent)")
             return false
         }
         self.ddsList = ddsList
@@ -220,16 +246,27 @@ private class DSFTile {
         return true
     }
 
-    func resolveDependencies() -> Bool {
-        guard self.resDone == false else {
-            return true
+    func isInPackage(_ url: URL) -> Bool {
+        return self.packURL == url.resolvingSymlinksInPath().absoluteURL
+    }
+
+    func resolveDependencies(force forced: Bool = false) -> Bool {
+        if (forced == false) {
+            guard self.haveLst == false else {
+                return self.dependencyListGood
+            }
         }
+        self.dependencyListGood = self.privRresolveDependencies()
+        return self.dependencyListGood
+    }
+
+    private func privRresolveDependencies() -> Bool {
         let textFile = TemporaryFile()
         if (OrthoToolCLI.defaultDSFTool.dsf2text(for: self.fileURL, to: textFile.url) == false) {
             return false
         }
         if (self.parseTextDSF(textFile.url) == false) {
-            Utils.err("ERROR: \(self.dsfName): failed to parse DSF text")
+            Utils.default.error("ERROR: \(self.dsfName): failed to parse DSF text")
             return false
         }
         guard let terList = self.terList else {
@@ -239,15 +276,28 @@ private class DSFTile {
             if let terURL = URL(string: relPath, relativeTo: self.packURL.appendingPathComponent("terrain")) {
                 self.parseTerFile(terURL)
             } else {
-                Utils.err("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
+                Utils.default.error("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
                 return false
             }
         }
-        self.resDone = true
         return true
     }
 
-    func validateDependencies() -> Bool {
+    func validateDependencies(force forced: Bool = false, verbosity chatty: Bool = true) -> Bool {
+        guard self.dependencyListGood == true else {
+            Utils.default.error("ERROR: \(self.dsfName): cannot validate unresolved dependencies!")
+            return false
+        }
+        if (forced == false) {
+            guard self.haveChk == false else {
+                return self.dependencyCheckGood
+            }
+        }
+        self.dependencyCheckGood = self.privValidateDependencies(chatty)
+        return self.dependencyCheckGood
+    }
+
+    func privValidateDependencies(_ chatty: Bool) -> Bool {
         guard let ddsList = self.ddsList else {
             return false
         }
@@ -262,12 +312,12 @@ private class DSFTile {
             if let terURL = URL(string: relPath, relativeTo: self.packURL.appendingPathComponent("terrain")) {
                 let status = BasicFileChecker.checkStatus(atPath: terURL.path, wantFile: true, wantReadable: true)
                 if (status != .allOK) {
-                    Utils.err("\(self.dsfName): missing/unreadable \(relPath)")
+                    if (chatty) { Utils.default.error("\(self.dsfName): missing/unreadable \(relPath)") }
                     missing = true
                     continue
                 }
             } else {
-                Utils.err("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
+                Utils.default.error("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
                 return false
             }
         }
@@ -275,12 +325,12 @@ private class DSFTile {
             if let pngURL = URL(string: relPath, relativeTo: self.packURL.appendingPathComponent("textures")) {
                 let status = BasicFileChecker.checkStatus(atPath: pngURL.path, wantFile: true, wantReadable: true)
                 if (status != .allOK) {
-                    Utils.err("\(self.dsfName): missing/unreadable \(relPath)")
+                    if (chatty) { Utils.default.error("\(self.dsfName): missing/unreadable \(relPath)") }
                     missing = true
                     continue
                 }
             } else {
-                Utils.err("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
+                Utils.default.error("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
                 return false
             }
         }
@@ -296,44 +346,216 @@ private class DSFTile {
                     }
                 }
                 if (status != .allOK) {
-                    Utils.err("\(self.dsfName): missing/unreadable \(relPath)")
+                    if (chatty) { Utils.default.error("\(self.dsfName): missing/unreadable \(relPath)") }
                     missing = true
                     continue
                 }
             } else {
-                Utils.err("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
+                Utils.default.error("ERROR: unable to resolve path to \(relPath) in \(self.packURL.path)")
                 return false
             }
         }
         if (missing == true) {
-            Utils.out("Bad tile \(self.dsfName): dependency check failed")
+            if (chatty) { Utils.default.print("\(self.dsfName): bad tile, dependency check failed") }
             return false
         }
         if (jpFound == true) {
-            Utils.out("Good tile \(self.dsfName): dependency check OK (warning: unconverted JPEG files present)")
+            if (chatty) { Utils.default.print("\(self.dsfName): good tile, dependency check OK (warning: unconverted JPEG files present)") }
         } else {
-            Utils.out("Good tile \(self.dsfName): dependency check OK")
+            if (chatty) { Utils.default.print("\(self.dsfName): good tile, dependency check OK") }
+        }
+        return true
+    }
+
+    func copyToURL(_ url : URL) -> Bool {
+        guard self.isInPackage(url) == false else {
+            Utils.default.error("ERROR: \(self.dsfName): same source/target directory, not copying")
+            return false
+        }
+        guard self.dependencyListGood == true else {
+            Utils.default.error("ERROR: \(self.dsfName): dependency check wasn't done, not copying")
+            return false
+        }
+        guard self.dependencyCheckGood == true else {
+            Utils.default.error("ERROR: \(self.dsfName): dependency check wasn't good, not copying")
+            return false
+        }
+        guard let ddsList = self.ddsList else {
+            Utils.default.error("ERROR: \(self.dsfName): unexpected error 1")
+            return false
+        }
+        guard let pngList = self.pngList else {
+            Utils.default.error("ERROR: \(self.dsfName): unexpected error 2")
+            return false
+        }
+        guard let terList = self.terList else {
+            Utils.default.error("ERROR: \(self.dsfName): unexpected error 3")
+            return false
+        }
+        let newURL = url.resolvingSymlinksInPath().absoluteURL
+        let dsfURL = newURL.appendingPathComponent("Earth nav data").appendingPathComponent(self.quadrantComponent).appendingPathComponent(self.dsfName)
+        let dirURL = newURL.appendingPathComponent("Earth nav data").appendingPathComponent(self.quadrantComponent)
+        let texURL = newURL.appendingPathComponent("textures")
+        let terURL = newURL.appendingPathComponent("terrain")
+        do {
+            try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true, attributes: nil)
+            try FileManager.default.createDirectory(at: terURL, withIntermediateDirectories: true, attributes: nil)
+            try FileManager.default.createDirectory(at: texURL, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            Utils.default.error("ERROR: unable to create directory structure at \(newURL.path)")
+            return false
+        }
+        var fileExists = BasicFileChecker.checkStatus(atPath: dsfURL.path, wantFile: true)
+        do {
+            if (fileExists == .allOK) {
+                try FileManager.default.removeItem(at: dsfURL)
+            }
+            try FileManager.default.copyItem(at: self.fileURL, to: dsfURL)
+        } catch {
+            Utils.default.error("ERROR: \(self.dsfName): file copy failed for \(dsfURL.path)")
+            return false
+        }
+        for relPath in terList {
+            let dstURL = terURL.appendingPathComponent(relPath)
+            let srcURL = self.packURL.appendingPathComponent("terrain").appendingPathComponent(relPath)
+            fileExists = BasicFileChecker.checkStatus(atPath: dstURL.path, wantFile: true)
+            do {
+                if (fileExists == .allOK) {
+                    try FileManager.default.removeItem(at: dstURL)
+                }
+                try FileManager.default.copyItem(at: srcURL, to: dstURL)
+            } catch {
+                Utils.default.error("ERROR: \(self.dsfName): file copy failed for \(dstURL.path)")
+                return false
+            }
+        }
+        for relPath in pngList {
+            let dstURL = texURL.appendingPathComponent(relPath)
+            let srcURL = self.packURL.appendingPathComponent("textures").appendingPathComponent(relPath)
+            fileExists = BasicFileChecker.checkStatus(atPath: dstURL.path, wantFile: true)
+            do {
+                if (fileExists == .allOK) {
+                    try FileManager.default.removeItem(at: dstURL)
+                }
+                try FileManager.default.copyItem(at: srcURL, to: dstURL)
+            } catch {
+                Utils.default.error("ERROR: \(self.dsfName): file copy failed for \(dstURL.path)")
+                return false
+            }
+        }
+        var jFound = false
+        for relPath in ddsList {
+            var dstURL = texURL.appendingPathComponent(relPath)
+            var srcURL = self.packURL.appendingPathComponent("textures").appendingPathComponent(relPath)
+            let jpPath = srcURL.deletingPathExtension().appendingPathExtension("jpg").path
+            if (BasicFileChecker.checkStatus(atPath: jpPath, wantFile: true) == .allOK) {
+                srcURL = srcURL.deletingPathExtension().appendingPathExtension("jpg")
+                dstURL = dstURL.deletingPathExtension().appendingPathExtension("jpg")
+                jFound = true
+            }
+            fileExists = BasicFileChecker.checkStatus(atPath: dstURL.path, wantFile: true)
+            do {
+                if (fileExists == .allOK) {
+                    try FileManager.default.removeItem(at: dstURL)
+                }
+                try FileManager.default.copyItem(at: srcURL, to: dstURL)
+            } catch {
+                Utils.default.error("ERROR: \(self.dsfName): file copy failed for \(dstURL.path)")
+                return false
+            }
+        }
+        if (jFound == true) {
+            Utils.default.print("\(self.dsfName): tile copy OK (warning: unconverted JPEG files present)")
+        } else {
+            Utils.default.print("\(self.dsfName): tile copy OK")
         }
         return true
     }
 }
 
 private class Utils {
-    class func out(_ s: String, terminator t: String = "\n") {
-        Utils.writeTextToFile(s + t, file: FileHandle.standardOutput)
-    }
-
-    class func err(_ s: String, terminator t: String = "\n") {
-        Utils.writeTextToFile(s + t, file: FileHandle.standardError)
-    }
-
-    class func writeTextToFile(_ s: String, file fh: FileHandle) {
-        if let data = s.data(using: .utf8, allowLossyConversion: true) {
-            fh.write(data)
+    private static var single : Utils = Utils()
+    class var `default` : Utils {
+        get {
+            return Utils.single
         }
     }
 
-    class func printResidentMemory() {
+    private var sout : FileHandle
+    private var serr : FileHandle
+
+    init() {
+        self.sout = FileHandle.standardOutput
+        self.serr = FileHandle.standardError
+    }
+
+    var standardOutput : FileHandle {
+        get {
+            return self.sout
+        }
+        set {
+            self.sout = newValue
+        }
+    }
+
+    var standardError : FileHandle {
+        get {
+            return self.serr
+        }
+        set {
+            self.serr = newValue
+        }
+    }
+
+    func error(_ strings: String...,
+               separator s: String = "",
+               terminator t: String = "\n",
+               encoding e: String.Encoding = .utf8,
+               allowLossyConversion b: Bool = true) {
+        self.print(self.standardError, strings, separator: s, terminator: t, encoding: e, allowLossyConversion: b)
+    }
+
+    /*
+     * Extremely dirrty but so fun: allow providing an optional,
+     * *leading* FileHandle by leveraging variadic parameters :D
+     */
+    func print(_ array: Any...,
+               separator s: String = "",
+               terminator t: String = "\n",
+               encoding e: String.Encoding = .utf8,
+               allowLossyConversion b: Bool = true) {
+        var text = ""
+        var objs = array
+        var file = self.standardOutput
+        if let first = objs.first, first is FileHandle {
+            file = first as! FileHandle
+            objs.removeFirst()
+        }
+        for item in objs {
+            if item is String {
+                if (text.isEmpty == false && s.isEmpty == false) {
+                    text += s
+                }
+                text += item as! String
+            }
+            if item is [String] {
+                for string in item as! [String] {
+                    if (text.isEmpty == false && s.isEmpty == false) {
+                        text += s
+                    }
+                    text += string
+                }
+            }
+        }
+        do {
+            text += t
+        }
+        if let d = text.data(using: e, allowLossyConversion: b) {
+            file.write(d)
+        }
+    }
+
+    func printResidentMemory() {
         var taskInfo = mach_task_basic_info()
         var size = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<natural_t>.size)
         let kerr: kern_return_t = withUnsafeMutablePointer(to: &taskInfo) {
@@ -342,7 +564,7 @@ private class Utils {
             }
         }
         if kerr == KERN_SUCCESS {
-            Utils.err("resident size: \(Float(taskInfo.resident_size) / 1024.0 / 1024.0) MiB")
+            self.print(self.standardError, "resident size: \(Float(taskInfo.resident_size) / 1024.0 / 1024.0) MiB")
         }
     }
 }
@@ -412,6 +634,7 @@ private class TemporaryFile {
 }
 
  class OrthoToolCLI {
+    private var copy2URL: URL?
     private var checkDps: Bool
     private var tileURLs: [URL]
 
@@ -441,7 +664,32 @@ private class TemporaryFile {
                 if (dsfTile!.resolveDependencies() == false) {
                     error = true
                 }
-                if (dsfTile!.validateDependencies() == false) {
+                if (dsfTile!.dependencyListGood == true &&
+                    dsfTile!.validateDependencies() == false) {
+                    error = true
+                }
+                dsfTile = nil
+            }
+        }
+        return error == false
+    }
+
+    private func copyTilesToURL(_ url: URL) -> Bool {
+        var error = false
+        for tileURL in self.tileURLs {
+            autoreleasepool {
+                var dsfTile : DSFTile? = DSFTile(tileURL)
+                if (dsfTile!.isInPackage(url) == false) { // else copyToURL a no-op
+                    if (dsfTile!.resolveDependencies() == false) {
+                        error = true
+                    }
+                    if (dsfTile!.dependencyListGood == true &&
+                        dsfTile!.validateDependencies(verbosity: false) == false) {
+                        error = true
+                    }
+                }
+                // always call to get the error message printed for us, if any
+                if (dsfTile!.copyToURL(url) == false) {
                     error = true
                 }
                 dsfTile = nil
@@ -469,7 +717,7 @@ private class TemporaryFile {
   --dsftool <path>  Manually specify path to the DSFTool executable
 
 """
-        Utils.out(helpText)
+        Utils.default.print(helpText)
     }
 
     private func parseOptions() -> Bool {
@@ -487,10 +735,19 @@ private class TemporaryFile {
                 exit(EXIT_SUCCESS)
             case "--dsftool":
                 if (currIndex == CommandLine.argc - 1) {
-                    Utils.err("ERROR: option requires an argument: --dsftool")
+                    Utils.default.error("ERROR: option requires an argument: --dsftool")
                     return false
                 }
                 OrthoToolCLI.dsfToolU = URL(fileURLWithPath: CommandLine.arguments[currIndex + 1])
+                currIndex += 1
+                break
+            case "--copy":
+                if (currIndex == CommandLine.argc - 1) {
+                    Utils.default.error("ERROR: option requires an argument: --copy")
+                    return false
+                }
+                self.copy2URL = URL(fileURLWithPath: CommandLine.arguments[currIndex + 1])
+                self.checkDps = false
                 currIndex += 1
                 break
             case "--check":
@@ -501,7 +758,7 @@ private class TemporaryFile {
                     tempPaths.append(URL(fileURLWithPath: CommandLine.arguments[currIndex]).resolvingSymlinksInPath().absoluteURL.path)
                     break
                 }
-                Utils.err("ERROR: illegal option: \(option)")
+                Utils.default.error("ERROR: illegal option: \(option)")
                 return false
             }
             currIndex += 1
@@ -528,17 +785,23 @@ private class TemporaryFile {
         if (self.parseOptions() == false) {
             return false
         }
-        if (self.checkDps == true) {
-            if (self.tileURLs.isEmpty == true) {
-                Utils.err("OrthoToolCLI: no tiles!")
+        if (self.tileURLs.isEmpty == true) {
+            Utils.default.error("OrthoToolCLI: no tiles!")
+            return false
+        }
+        if let copy2URL = self.copy2URL {
+            if (self.copyTilesToURL(copy2URL) == false) {
                 return false
             }
+            return true
+        }
+        if (self.checkDps == true) {
             if (self.checkTileDependencies() == false) {
                 return false
             }
             return true
         }
-        Utils.err("OrthoToolCLI: nothing to do!")
+        Utils.default.error("OrthoToolCLI: nothing to do!")
         return false
     }
  }
