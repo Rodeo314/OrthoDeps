@@ -556,6 +556,7 @@ private class Utils {
     }
 
     func printResidentMemory() {
+        #if os(macOS)
         var taskInfo = mach_task_basic_info()
         var size = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<natural_t>.size)
         let kerr: kern_return_t = withUnsafeMutablePointer(to: &taskInfo) {
@@ -566,6 +567,7 @@ private class Utils {
         if kerr == KERN_SUCCESS {
             self.print(self.standardError, "resident size: \(Float(taskInfo.resident_size) / 1024.0 / 1024.0) MiB")
         }
+        #endif
     }
 }
 
@@ -629,7 +631,7 @@ private class TemporaryFile {
             }
         }
         self.tmpFileURL = TemporaryFile.tempDir!.appendingPathComponent(ProcessInfo.processInfo.globallyUniqueString, isDirectory: false)
-        FileManager.default.createFile(atPath: self.tmpFileURL.path, contents: nil, attributes: nil)
+        let _ = FileManager.default.createFile(atPath: self.tmpFileURL.path, contents: nil, attributes: nil)
     }
 }
 
