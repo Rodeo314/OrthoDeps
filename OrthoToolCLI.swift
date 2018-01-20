@@ -21,13 +21,18 @@ private class BasicFileChecker {
         if (FileManager.default.fileExists(atPath: path, isDirectory: &isDir) == false) {
             return .notExist
         }
+        #if os(macOS)
+        let isDirBoolValue = isDir.boolValue
+        #else
+        let isDirBoolValue = isDir
+        #endif
         if (reqF == true) {
-            if (isDir.boolValue == true) {
+            if (isDirBoolValue == true) {
                 return .notFile
             }
         }
         if (reqD == true) {
-            if (isDir.boolValue == false) {
+            if (isDirBoolValue == false) {
                 return .notDirectory
             }
         }
@@ -624,11 +629,15 @@ private class TemporaryFile {
 
     init() {
         if (TemporaryFile.tempDir == nil) {
+            #if os(macOS)
             do {
                 TemporaryFile.tempDir = try FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: URL(fileURLWithPath: FileManager.default.currentDirectoryPath), create: true)
             } catch {
                 TemporaryFile.tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true) // write directly in temporary directory instead of subdir
             }
+            #else
+                TemporaryFile.tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true) // write directly in temporary directory instead of subdir
+            #endif
         }
         self.tmpFileURL = TemporaryFile.tempDir!.appendingPathComponent(ProcessInfo.processInfo.globallyUniqueString, isDirectory: false)
         let _ = FileManager.default.createFile(atPath: self.tmpFileURL.path, contents: nil, attributes: nil)
@@ -658,44 +667,75 @@ private class TemporaryFile {
         return URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
     }
 
+    @inline(__always) private func singleTileDeps(_ url: URL) -> Bool {
+        var dsfTile : DSFTile? = DSFTile(url)
+        if (dsfTile!.resolveDependencies() == false) {
+            dsfTile = nil
+            return false
+        }
+        if (dsfTile!.dependencyListGood == true &&
+            dsfTile!.validateDependencies() == false) {
+            dsfTile = nil
+            return false
+        }
+        dsfTile = nil
+        return true
+    }
+
     private func checkTileDependencies() -> Bool {
         var error = false
         for tileURL in self.tileURLs {
+            #if os(macOS)
             autoreleasepool {
-                var dsfTile : DSFTile? = DSFTile(tileURL)
-                if (dsfTile!.resolveDependencies() == false) {
+                if (self.singleTileDeps(tileURL) == false) {
                     error = true
                 }
-                if (dsfTile!.dependencyListGood == true &&
-                    dsfTile!.validateDependencies() == false) {
-                    error = true
-                }
-                dsfTile = nil
             }
+            #else
+                if (self.singleTileDeps(tileURL) == false) {
+                    error = true
+                }
+            #endif
         }
         return error == false
+    }
+
+    @inline(__always) private func singleTileCopy(_ url: URL) -> Bool {
+        var dsfTile : DSFTile? = DSFTile(url)
+        if (dsfTile!.isInPackage(url) == false) { // else copyToURL a no-op
+            if (dsfTile!.resolveDependencies() == false) {
+                dsfTile = nil
+                return false
+            }
+            if (dsfTile!.dependencyListGood == true &&
+                dsfTile!.validateDependencies(verbosity: false) == false) {
+                dsfTile = nil
+                return false
+            }
+        }
+        // always call to get the error message printed for us, if any
+        if (dsfTile!.copyToURL(url) == false) {
+            dsfTile = nil
+            return false
+        }
+        dsfTile = nil
+        return true
     }
 
     private func copyTilesToURL(_ url: URL) -> Bool {
         var error = false
         for tileURL in self.tileURLs {
+            #if os(macOS)
             autoreleasepool {
-                var dsfTile : DSFTile? = DSFTile(tileURL)
-                if (dsfTile!.isInPackage(url) == false) { // else copyToURL a no-op
-                    if (dsfTile!.resolveDependencies() == false) {
-                        error = true
-                    }
-                    if (dsfTile!.dependencyListGood == true &&
-                        dsfTile!.validateDependencies(verbosity: false) == false) {
-                        error = true
-                    }
-                }
-                // always call to get the error message printed for us, if any
-                if (dsfTile!.copyToURL(url) == false) {
+                if (self.singleTileCopy(tileURL) == false) {
                     error = true
                 }
-                dsfTile = nil
             }
+            #else
+                if (self.singleTileCopy(tileURL) == false) {
+                    error = true
+                }
+            #endif
         }
         return error == false
     }
