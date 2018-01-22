@@ -700,9 +700,9 @@ private class TemporaryFile {
         return error == false
     }
 
-    @inline(__always) private func singleTileCopy(_ url: URL) -> Bool {
-        var dsfTile : DSFTile? = DSFTile(url)
-        if (dsfTile!.isInPackage(url) == false) { // else copyToURL a no-op
+    @inline(__always) private func singleTileCopy(_ inTileURL : URL, _ outPackageURL: URL) -> Bool {
+        var dsfTile : DSFTile? = DSFTile(inTileURL)
+        if (dsfTile!.isInPackage(outPackageURL) == false) { // else copyToURL a no-op
             if (dsfTile!.resolveDependencies() == false) {
                 dsfTile = nil
                 return false
@@ -714,7 +714,7 @@ private class TemporaryFile {
             }
         }
         // always call to get the error message printed for us, if any
-        if (dsfTile!.copyToURL(url) == false) {
+        if (dsfTile!.copyToURL(outPackageURL) == false) {
             dsfTile = nil
             return false
         }
@@ -722,17 +722,20 @@ private class TemporaryFile {
         return true
     }
 
-    private func copyTilesToURL(_ url: URL) -> Bool {
+    private func copyTilesToURL() -> Bool {
         var error = false
+        guard let copy2URL = self.copy2URL else {
+            return false
+        }
         for tileURL in self.tileURLs {
             #if os(macOS)
             autoreleasepool {
-                if (self.singleTileCopy(tileURL) == false) {
+                if (self.singleTileCopy(tileURL, copy2URL) == false) {
                     error = true
                 }
             }
             #else
-                if (self.singleTileCopy(tileURL) == false) {
+                if (self.singleTileCopy(tileURL, copy2URL) == false) {
                     error = true
                 }
             #endif
@@ -831,8 +834,8 @@ private class TemporaryFile {
             Utils.default.error("OrthoToolCLI: no tiles!")
             return false
         }
-        if let copy2URL = self.copy2URL {
-            if (self.copyTilesToURL(copy2URL) == false) {
+        if self.copy2URL != nil {
+            if (self.copyTilesToURL() == false) {
                 return false
             }
             return true
