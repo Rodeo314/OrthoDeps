@@ -703,14 +703,9 @@ private class TemporaryFile {
     @inline(__always) private func singleTileCopy(_ inTileURL : URL, _ outPackageURL: URL) -> Bool {
         var dsfTile : DSFTile? = DSFTile(inTileURL)
         if (dsfTile!.isInPackage(outPackageURL) == false) { // else copyToURL a no-op
-            if (dsfTile!.resolveDependencies() == false) {
-                dsfTile = nil
-                return false
-            }
-            if (dsfTile!.dependencyListGood == true &&
-                dsfTile!.validateDependencies(verbosity: false) == false) {
-                dsfTile = nil
-                return false
+            // don't return on error: not verbose, we'd exit w/out printing the error
+            if (dsfTile!.resolveDependencies() == true) {
+                _ = dsfTile!.validateDependencies(verbosity: false)
             }
         }
         // always call to get the error message printed for us, if any
